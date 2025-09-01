@@ -9,6 +9,3 @@ level = "error"
 
 [client]
 showErrorDetails = "none"
-
-[global]
-hideTopBar = true

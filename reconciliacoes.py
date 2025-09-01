@@ -2,17 +2,25 @@ import pandas as pd
 import streamlit as st
 import math
 import ast
+import numpy as np
 from io import BytesIO
+from itertools import combinations
 from fuzzywuzzy import fuzz
 from collections import Counter
 
+
 def preprocess(df):
     df["Descrição"] = df["Descrição"].str.upper().str.replace(r"[^\w\s]", "", regex=True)
-    df["Data"] = pd.to_datetime(df["Data"])
+    df["Data"] = pd.to_datetime(df["Data"]).dt.date
+    df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce").astype(float).round(2)
+    df.dropna()
     return df
 
 
-def match_transactions(ledger, bank, previous_matched=None, date_tolerance_days:int=365):
+def match_transactions(ledger, bank, previous_matched=None, match_total=100, match_parcial=80):
+    if 'num_conciliacao' not in st.session_state:
+        st.session_state.num_conciliacao = 1
+
     if previous_matched:
         matches = previous_matched
     else:
@@ -26,20 +34,17 @@ def match_transactions(ledger, bank, previous_matched=None, date_tolerance_days:
         ledger_date = ledger_row["Data"]
         ledger_desc = ledger_row["Descrição"]
         candidates_original = bank[
-            (bank["Valor"]==ledger_amount) &
-            (bank["Data"].between(ledger_date - pd.Timedelta(days=date_tolerance_days),
-            ledger_date + pd.Timedelta(days=date_tolerance_days)))
+            (bank["Valor"]==ledger_amount)
         ]
 
         if candidates_original.empty:
             continue
 
         penalizacao_valores_iguais = 5
-        initial_score = 80 - (len(candidates_original) * penalizacao_valores_iguais)
+        score_threshold = 80
+        initial_score = score_threshold - (len(candidates_original) * penalizacao_valores_iguais)
         candidates = bank_falta[
-            (bank_falta["Valor"]==ledger_amount) &
-            (bank_falta["Data"].between(ledger_date - pd.Timedelta(days=date_tolerance_days),
-            ledger_date + pd.Timedelta(days=date_tolerance_days)))
+            (bank_falta["Valor"]==ledger_amount)
         ]
 
         if candidates.empty:
@@ -52,28 +57,39 @@ def match_transactions(ledger, bank, previous_matched=None, date_tolerance_days:
             score = 0
             bank_date = candidates.loc[j, 'Data']
             candidates.loc[j, 'DateDiff'] = abs((ledger_date - bank_date).days)
-            date_score = max(initial_score - candidates.loc[j, 'DateDiff'], 25)
+            min_score_data = 25
+            date_score = max(initial_score - candidates.loc[j, 'DateDiff'], min_score_data)
             bank_desc = bank_row["Descrição"]
-            description_score = fuzz.token_sort_ratio(ledger_desc, bank_desc) / 5
+            ceiling_description_score = 5
+            description_score = fuzz.token_sort_ratio(ledger_desc, bank_desc) / ceiling_description_score
             score = date_score + description_score
             best_score = max(best_score, score)
 
             if best_score == score:
                 best_match = j
 
-        if best_score > 30 and best_match is not None:
+        if best_score >= match_parcial and best_match is not None:
+            
+            if best_score >= match_total:
+                nota_match = "Match total"
+            else:
+                nota_match = "Match parcial"
+
             matches.append({
+                "Ordem": st.session_state.num_conciliacao,
                 "OrdemMovimento": i,
                 "DataMovimento": ledger_date.strftime("%Y-%m-%d"),
                 "DescricaoMovimento": ledger_desc,
-                "ValorMovimento": ledger_amount,
+                "ValorMovimento": float(ledger_amount),
                 "DataExtrato": bank_falta.loc[best_match, "Data"].strftime("%Y-%m-%d"),
                 "OrdemExtrato": best_match,
                 "DescricaoBanco": bank_falta.loc[best_match, "Descrição"],
-                "ValorBanco": bank_falta.loc[best_match, "Valor"],
+                "ValorBanco": float(bank_falta.loc[best_match, "Valor"]),
                 "Score": int(best_score),
-                "Nota":"Automático"
+                "Nota": nota_match
             })
+
+            st.session_state.num_conciliacao += 1
             
             bank_falta.drop([best_match], inplace=True)
             ledger.drop([i], inplace=True)
@@ -83,18 +99,20 @@ def match_transactions(ledger, bank, previous_matched=None, date_tolerance_days:
 
 def dataframes_to_excel(matches: list, ledger: pd.DataFrame, bank: pd.DataFrame):
     matched_df = pd.DataFrame(matches)
-    sheets = ['MATCH', 'VALIDAR', 'FALTA']
-    ledger['Tipo'] = 'Contabilidade'
-    bank['Tipo'] = 'Banco'
+    sheets = ['MATCH TOTAL', 'MATCH PARCIAL', 'MATCH MANUAL', 'CNT', 'BANCO']
+    df_ledger = ledger.copy()
+    df_ledger.drop(columns=["Ver"], inplace=True)
 
-    missing_df = pd.concat([ledger, bank], ignore_index=True)
-    missing_df = missing_df[['Tipo', 'Data', 'Descrição', 'Valor']]
-    missing_df.sort_values(by=['Valor', 'Data', 'Tipo'], inplace=True)
+    df_bank = ledger.copy()
+    df_bank.drop(columns=["Ver"], inplace=True)
 
-    evaluate_df = matched_df[matched_df['Score'] < 60]
-    matched_df = matched_df[(matched_df['Score'] >= 60) | (matched_df['Score'].isna())]
+    matched_total = matched_df[ (matched_df['Score'] >= st.session_state.match_total) & (matched_df['Score'].isna() == False) ]
+    matched_parcial = matched_df[(matched_df['Score'] >= st.session_state.match_parcial) & (matched_df['Score'] < st.session_state.match_total) & (matched_df['Score'].isna() == False) ]
+    matched_manual = matched_df[(matched_df['Score'].isna())]
 
-    dataframes = [matched_df, evaluate_df, missing_df]
+    matched_manual.drop(columns=["OrdemMovimento", "OrdemExtrato", "Score"], inplace=True)
+
+    dataframes = [matched_total, matched_parcial, matched_manual, df_ledger, df_bank]
 
     output = BytesIO()
 
@@ -106,214 +124,55 @@ def dataframes_to_excel(matches: list, ledger: pd.DataFrame, bank: pd.DataFrame)
     return excel_bytes
 
 
-def upload_file(placeholder):
-    with placeholder.container():
-        st.title("Dados para reconcialiação um-para-um")
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.session_state.saldo_i_banco = st.number_input("Saldo Inicial Banco", value=0.00)
-        with col2:
-            st.session_state.saldo_i_cnt = st.number_input("Saldo Inicial Contabilidade", value=0.00)
-        with col3:
-            tol_dias = st.number_input("Tolerância dias para conciliação um-para-um", value=365, min_value=0)
-        st.divider()
-        reconciliation_file = st.file_uploader("Fazer upload do ficheiro. Deve ter 2 folhas com nome CNT e BANCO cada uma com as colunas Data, Descrição e Valor.", type=["xlsx", "xls"])
-        submit_button = st.button("Executar programa")
-        if submit_button:
-            if reconciliation_file == None:
-                st.warning("Não foi efetuado upload do ficheiro")
-            else:
-                file = pd.read_excel(reconciliation_file, sheet_name=None)
-                placeholder.empty()
-                st.session_state.file = file
-                st.session_state.days = tol_dias
-
-
 def download_file():
     excel_bytes = dataframes_to_excel(st.session_state.conciliados, st.session_state.ledger, st.session_state.bank)
     return excel_bytes
 
 
-def matrizes_manual(container):
-    px_per_row = 35
-    with container.container():
-        col1, col2 = st.columns([2,2])
-        if 'edit_ledger' in st.session_state:
-            with col1:
-                st.session_state.cnt = st.data_editor(
-                    data=st.session_state.edit_ledger[['Data', 'Descrição', 'Valor','Ver']],
-                    disabled=['Data', 'Descrição','Valor'],
-                    use_container_width=True,
-                    height = min(35 + (px_per_row * len(st.session_state.edit_ledger)), 500),
-                    hide_index=True,
-                    key=f'ledger_matrix_{st.session_state.version}'
-                )
-            with col2:
-                st.session_state.bnk = st.data_editor(
-                    data=st.session_state.edit_bank[['Data', 'Descrição','Valor', 'Ver']],
-                    use_container_width=True,
-                    hide_index=True,
-                    height = min(35 + (px_per_row * len(st.session_state.edit_bank)), 500),
-                    key=f'bank_matrix_{st.session_state.version}'
-                )
+def testar_combos(df, valor, max_subset_size=2, cancel_tol=1e-4, versao=None):
+    df_inicio = df[['Valor']]
+    valor_x_2 = valor * 2
 
-        if 'cnt' in st.session_state:
-            linhas_cnt = st.session_state.cnt[st.session_state.cnt['Ver']==True]
-            soma_cnt = round(linhas_cnt["Valor"].sum(),2)
-            linhas_bank = st.session_state.bnk[st.session_state.bnk['Ver']==True]
-            soma_bank = round(linhas_bank["Valor"].sum(),2)
-            dif_soma = round(soma_cnt - soma_bank,2)
-            opcoes_cnt = len(st.session_state.cnt.loc[(st.session_state.cnt['Valor'] == -dif_soma)])
-            opcoes_banco = len(st.session_state.bnk.loc[(st.session_state.bnk['Valor'] == dif_soma)])
+    if valor > 0:
+        df_clean = df_inicio[ (df_inicio['Valor'] <= (valor_x_2)) & (df_inicio['Valor'] >= (-valor_x_2))]
+    else:
+        df_clean = df_inicio[ (df_inicio['Valor'] >= (valor_x_2)) & (df_inicio['Valor'] <= (-valor_x_2))]
 
-            if dif_soma != 0 and opcoes_cnt == 0 and opcoes_banco == 0:
-                st.error(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: {dif_soma}") 
-            elif dif_soma == 0:
-                st.success(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: 0")
-            else:
-                st.warning(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: {dif_soma} ---- Existem {opcoes_cnt} opções na contabilidade com esta diferença --- Existem {opcoes_banco} opções no banco com esta diferença")
-
-
-def handle_change_combos():
-    st.session_state.combos = st.session_state.combos_editor
-
-
-def testar_combos(df, valor, tolerancia_valor, max_subset_size=4, cancel_tol=1e-9, versao=None):
-    combos = []
-    df = df.drop(columns=["Ver"])
-    rows = list(df.itertuples(index=True, name=None))
+    rows = list(df_clean.itertuples(index=True, name=None))
     n = len(rows)
     num_combos = sum(math.comb(n, r) for r in range(1, max_subset_size+1))
+    if num_combos > 2_000_000:
+        return num_combos
 
-    if num_combos > 1000000:
-        st.error(f"O número de combinações possíveis deve ser inferior a 1.000.000, atual = {num_combos}")
-        return
+    vals = df_clean['Valor'].to_numpy()
+    idxs = df_clean.index.to_numpy()
 
-    def search(start, depth, current_sum, current_rows, counter):
-            if depth > max_subset_size:
-                return
+    comb_dict = {}
+    for size in range(1, max_subset_size + 1):
+        for comb in combinations(range(len(vals)), size):
+            combo_idxs = tuple(idxs[list(comb)])
+            combo_vals = tuple(vals[list(comb)])
+            combo_sum = sum(combo_vals)
+            comb_dict[combo_idxs] = {'values': combo_vals, 'sum': combo_sum}
+    
+    matching_combos = {k: v for k, v in comb_dict.items() if abs(v['sum'] - valor) <= cancel_tol}
+    all_rows = []
 
-            # Check if current combination matches the target
-            if depth > 0 and abs(current_sum - valor) <= tolerancia_valor:
-                combos.append(list(current_rows))
+    for i, combo_idxs in enumerate(matching_combos.keys(), start=1):
+        matching_rows = df.loc[list(combo_idxs)].copy()
+        matching_rows["#"] = i
+        all_rows.append(matching_rows)
 
-            for i in range(start, n):
-                row = rows[i]
-                v = row[3]
-
-                # Skip if this value cancels an existing one
-                if v != 0 and counter.get(-v, 0) > 0:
-                    continue
-
-                # Branch-and-bound: remaining sum max
-                remaining_sum_max = sum(abs(r[3]) for r in rows[i+1:])
-
-                if abs(current_sum + v) - abs(valor) > tolerancia_valor + remaining_sum_max:
-                    continue  # impossible to reach target
-
-                # Include current row and recurse
-                counter[v] += 1
-                current_rows.append(row)
-                search(i + 1, depth + 1, current_sum + v, current_rows, counter)
-                current_rows.pop()
-                counter[v] -= 1
-                if counter[v] == 0:
-                    del counter[v]
-
-    search(0, 0, 0.0, [], Counter())
-
-    if combos:
-        flattened = []
-        for i, combo in enumerate(combos, start=1):
-            for row in combo:
-                flattened.append({
-                    "Index": row[0],
-                    "Combo #": i,
-                    "Data": row[2],
-                    "Descrição": row[1],
-                    "Valor": row[3],
-                    "Ver": False
-                })
-        result_df = pd.DataFrame(flattened)
-        return result_df     
+    if len(all_rows) > 0:
+        df_matching = pd.concat(all_rows)
+        return df_matching
     else:
-        st.warning("Não existem combinações possíveis para os parametros introduzidos")
-
-
-def ver_opcoes_reconciliacao(df):
-    if df is st.session_state.ledger:
-        df_outra = st.session_state.bank
-        opcao_ledger = 0
-    else:
-        df_outra = st.session_state.ledger
-        opcao_ledger = 1
-
-    with st.container():
-        min_data = min(st.session_state.ledger["Data"].min(), st.session_state.bank["Data"].min())
-        max_data = max(st.session_state.ledger["Data"].max(), st.session_state.bank["Data"].max())
-        min_valor = min(st.session_state.ledger["Valor"].min(), st.session_state.bank["Valor"].min())
-        max_valor = max(st.session_state.ledger["Valor"].max(), st.session_state.bank["Valor"].max())
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1: intervalo_datas = st.date_input("Datas", ( min_data, max_data ), min_data, max_data)
-        with col2: pesquisa = st.text_input("Pesquisa")
-        with col3: input_min_valor = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor)
-        with col4: input_max_valor = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor)
-        with col5: max_size_combo = st.number_input(label="Num Docs Máx", value=4)
-
-        col1, col2 = st.columns([2,2])
-        with col1:
-            tbl = st.data_editor(
-                data=df[['Data', 'Descrição','Valor','Ver']],
-                use_container_width=True,
-                key='tabela_original'
-            )
-            nota = st.text_input("Nota")
-            ver_combos_btn = st.button("Ver combinações")
-            conciliar_clicked = st.button("Conciliar")
-
-        with col2:
-            if ver_combos_btn:
-                if 'versao_combos' not in st.session_state:
-                    st.session_state.versao_combos = 0
-                else:
-                    previous = f'result_combos_{st.session_state.versao_combos-1}'
-                    if previous in st.session_state:
-                        del st.session_state[previous]
-
-                st.session_state.combos = None
-                valor = tbl[tbl['Ver'] == True]['Valor'].sum()
-                df_mask = filtrar_df(df_outra, intervalo_datas, input_min_valor, input_max_valor, pesquisa)
-                result_df = testar_combos(valor=valor, df=df_mask, versao=st.session_state.versao_combos, max_subset_size=max_size_combo)
-                st.session_state.combo_df = result_df
-                st.session_state.versao_combos += 1
-
-            if 'combo_df' in st.session_state:
-                combo_df = st.data_editor(st.session_state.combo_df, hide_index=True, key=f"result_combos_{st.session_state.versao_combos}")
-
-    if conciliar_clicked:
-        if opcao_ledger == 0:
-            conciliar(bank=combo_df, ledger=tbl[tbl['Ver']==True], nota=nota)
-        elif opcao_ledger == 1:
-            conciliar(ledger=combo_df, bank=tbl[tbl['Ver']==True], nota=nota)
-        st.session_state.combo_df = None
-        st.rerun()
-
-    if st.button("Preparar ficheiro download"):
-        excel_bytes = download_file()
-        st.download_button(
-            label="Download ficheiro",
-            data=excel_bytes,
-            file_name='reconciliacao.xlsx',
-            mime='application/vnd.ms-excel'
-        )
+        return 0
 
 
 def conciliar(ledger=None, bank=None, nota=None):
     if 'num_conciliacao' not in st.session_state:
-        st.session_state.num_conciliacao = 0
+        st.session_state.num_conciliacao = 1
     else:
         st.session_state.num_conciliacao += 1
 
@@ -352,7 +211,8 @@ def conciliar(ledger=None, bank=None, nota=None):
 
     if ledger_date or bank_date:
         st.session_state.conciliados.append({
-            "OrdemMovimento": f'C{st.session_state.num_conciliacao}',
+            "Ordem": st.session_state.num_conciliacao,
+            "OrdemMovimento": None,
             "DataMovimento": ledger_date,
             "DescricaoMovimento": ledger_desc,
             "ValorMovimento": ledger_amount,
@@ -363,26 +223,256 @@ def conciliar(ledger=None, bank=None, nota=None):
             "Nota": nota
         })
 
+        st.session_state.edit_ledger = filtrar_df(st.session_state.ledger, st.session_state["Datas_Cnt"], st.session_state["Min_Valor_Cnt"], st.session_state["Max_Valor_Cnt"], st.session_state["Pesquisa_Cnt"])
+        st.session_state.edit_bank = filtrar_df(st.session_state.bank, st.session_state["Datas_Banco"], st.session_state["Min_Valor_Banco"], st.session_state["Max_Valor_Banco"], st.session_state["Pesquisa_Banco"])
+
 
 def filtrar_df(df, intervalo_datas, min_valor, max_valor, pesquisa):
     min_data, max_data = intervalo_datas
-    min_data = pd.to_datetime(min_data)
-    max_data = pd.to_datetime(max_data)
+    min_data = pd.to_datetime(min_data).date()
+    max_data = pd.to_datetime(max_data).date()
     termos_pesquisa = [term.strip() for term in pesquisa.split(";") if term.strip()]
 
+    mask = df.copy(deep=True)
+
     if termos_pesquisa:
-        mask = df[
-            (df["Valor"].between(min_valor, max_valor)) &
-            (df["Data"].between(min_data, max_data)) &
-            (df["Descrição"].str.contains('|'.join(termos_pesquisa), case=False, na=False))
+        mask = mask[
+            (mask["Valor"].between(min_valor, max_valor)) &
+            (mask["Data"].between(min_data, max_data)) &
+            (mask["Descrição"].str.contains('|'.join(termos_pesquisa), case=False, na=False))
         ]
-        return mask
+
     else:
-        mask = df[
-            (df["Valor"].between(min_valor, max_valor)) &
-            (df["Data"].between(min_data, max_data))
+        mask = mask[
+            (mask["Valor"].between(min_valor, max_valor)) &
+            (mask["Data"].between(min_data, max_data))
         ]
-        return mask
+
+    mask['Ver'] = False
+    return mask
+
+
+def combos_por_total(valor, max_subset_size, df_outra, original_df, outra_tbl):
+    result_df = testar_combos(df_outra, valor, max_subset_size=max_subset_size, cancel_tol=1e-4, versao=None)
+    if type(result_df) is not int:
+        result_df['Tipo'] = outra_tbl
+        result_df = pd.concat([original_df, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
+                            ])
+    return result_df
+
+
+def combos_por_documento(valor, max_subset_size, df_outra, row, outra_tbl):
+    result_df = testar_combos(df_outra, valor, max_subset_size=max_subset_size, cancel_tol=1e-4, versao=None)
+    if type(result_df) is not int:
+        result_df['Tipo'] = outra_tbl
+        result_df = pd.concat([row, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
+                            ])
+    return result_df
+
+
+def show_combos_por_tipo(fonte, tipo, max_subset_size = 2, periodo = False):
+    if fonte == "cnt":
+        df_outra = st.session_state.tbl_banco
+        df = st.session_state.tbl_cnt
+        outra_tbl = 'banco'
+    else:
+        df_outra = st.session_state.tbl_cnt
+        df = st.session_state.tbl_banco
+        outra_tbl = 'cnt'
+
+    st.session_state.combo_clicked = 1
+    original_df = df.copy()
+    original_df = original_df[original_df['Ver']==True]
+    original_df['#'] = "--"
+    original_df['Tipo'] = fonte
+    original_df['Ver'] = False
+
+    df['Data'] = pd.to_datetime(df["Data"], errors="coerce")
+    df_outra['Data'] = pd.to_datetime(df_outra["Data"], errors="coerce")
+    
+    if tipo == "Por total":
+        df_all = pd.DataFrame()
+        valor = round(df.loc[df['Ver']==True, 'Valor'].sum(),2)
+
+        if periodo == 'dia':
+            dias = df_outra['Data'].unique()
+            for dia in dias:
+                df_parcial = df_outra[df_outra['Data']==dia]
+                result_parcial_df = combos_por_total(valor, max_subset_size, df_parcial, original_df, outra_tbl)
+
+                if type(result_parcial_df) is not int:
+                    df_all = pd.concat([df_all, result_parcial_df])
+        
+            if df_all.empty == False:
+                st.session_state.result_df = df_all
+
+        elif periodo == 'mes':
+            anos = df_outra['Data'].dt.year.unique()
+
+            for ano in anos:
+                df_parcial_ano = df_outra[df_outra['Data'].dt.year == ano]
+                meses = df_outra['Data'].dt.month.unique()
+
+                for mes in meses:
+                    df_parcial_mes = df_parcial_ano[df_parcial_ano['Data'].dt.month == mes]
+                    result_parcial_df = combos_por_total(valor, max_subset_size, df_parcial_mes, original_df, outra_tbl)
+
+                    if type(result_parcial_df) is not int:
+                        df_all = pd.concat([df_all, result_parcial_df])
+
+            if df_all.empty == False:
+                st.session_state.result_df = df_all
+                return st.session_state.result_df
+
+        elif periodo == 'ano':
+            anos = df_outra['Data'].dt.year.unique()
+
+            for ano in anos:
+                df_parcial = df_outra[pd.to_datetime(df_outra['Data']).dt.year == ano]
+                result_parcial_df = combos_por_total(valor, max_subset_size, df_parcial, original_df, outra_tbl)
+
+                if type(result_parcial_df) is not int:
+                    df_all = pd.concat([df_all, result_parcial_df])
+
+            if df_all.empty == False:
+                st.session_state.result_df = df_all
+                return st.session_state.result_df
+
+        else:
+            result_df = testar_combos(df_outra, valor, max_subset_size=max_subset_size, cancel_tol=1e-9, versao=None) 
+            
+            if type(result_df) is not int:
+                result_df['Tipo'] = outra_tbl
+                st.session_state.result_df = pd.concat([original_df, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
+                                        ])
+            else:
+                st.session_state.result_df = result_df
+                return st.session_state.result_df
+
+    elif tipo == "Por documento":
+        df_all = pd.DataFrame()
+        for index, row in original_df.iterrows():
+            valor = round(row['Valor'],2)
+            row_original = row.to_frame().T
+
+            if periodo == 'dia':
+                dias = df_outra['Data'].unique()
+                for dia in dias:
+                    df_parcial = df_outra[df_outra['Data']==dia]
+                    result_parcial_df = combos_por_documento(valor, max_subset_size, df_parcial, row_original, outra_tbl)
+
+                    if type(result_parcial_df) is not int:
+                        df_all = pd.concat([df_all, result_parcial_df])
+            
+                if df_all.empty == False:
+                    st.session_state.result_df = df_all
+
+            elif periodo == 'mes':
+                anos = df_outra['Data'].dt.year.unique()
+
+                for ano in anos:
+                    df_parcial_ano = df_outra[df_outra['Data'].dt.year == ano]
+                    meses = df_outra['Data'].dt.month.unique()
+
+                    for mes in meses:
+                        df_parcial_mes = df_parcial_ano[df_parcial_ano['Data'].dt.month == mes]
+                        result_parcial_df = combos_por_documento(valor, max_subset_size, df_parcial_mes, row_original, outra_tbl)
+
+                        if type(result_parcial_df) is not int:
+                            df_all = pd.concat([df_all, result_parcial_df])
+
+                if df_all.empty == False:
+                    st.session_state.result_df = df_all
+
+            elif periodo == 'ano':
+                anos = df_outra['Data'].dt.year.unique()
+
+                for ano in anos:
+                    df_parcial = df_outra[df_outra['Data'].dt.year == ano]
+                    result_parcial_df = combos_por_documento(valor, max_subset_size, df_parcial, row_original, outra_tbl)
+
+                    if type(result_parcial_df) is not int:
+                        df_all = pd.concat([df_all, result_parcial_df])
+
+                if df_all.empty == False:
+                    st.session_state.result_df = df_all
+
+            else:
+                result_df = testar_combos(df_outra, valor, max_subset_size=max_subset_size, cancel_tol=1e-9, versao=None)
+                
+                if type(result_df) is not int:
+                    result_df['Tipo'] = outra_tbl
+                    df_all = pd.concat([df_all, row_original, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
+                                            ])
+
+                if df_all.empty == False:
+                    st.session_state.result_df = df_all
+                else:
+                    st.session_state.result_df = result_df
+
+    return st.session_state.result_df
+
+
+@st.dialog("Escolher opções", width="large")
+def opcoes_combos(fonte):
+    options = ["Por total", "Por documento"]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        escolher_opcao_tipo = st.selectbox("Escolher o tipo", options=options)
+    with col2:
+        escolher_max_doc = st.number_input("Num Documentos Máx", min_value=0, value=2)
+
+    dia = st.checkbox("Apenas considerar movimentos do mesmo dia")
+    mes = st.checkbox("Apenas considerar movimentos do mesmo mês")
+    ano = st.checkbox("Apenas considerar movimentos do mesmo ano")
+
+    if dia == True:
+        periodo = 'dia'
+    elif mes == True:
+        periodo = 'mes'
+    elif ano == True:
+        periodo = 'ano'
+    else:
+        periodo = None
+
+    if st.button("Ver combinações"):
+        with st.spinner("A executar"):
+            st.session_state.result_df = 0
+            st.session_state.combo_clicked = 1
+            st.session_state.result_df = show_combos_por_tipo(fonte, escolher_opcao_tipo, max_subset_size = escolher_max_doc, periodo=periodo)
+
+        if type(st.session_state.result_df) is int:
+            del st.session_state['combo_clicked']
+            if st.session_state.result_df == 0:
+                return st.warning("Não foram encontradas combinações para os parâmetros selecionados")
+            else:
+                return st.error(f"Limite ultrapassado de 2,000,000 possibilidades. A pesquisa tem {st.session_state.result_df:,}.")
+
+    if 'combo_clicked' in st.session_state:
+        if 'result_df' in st.session_state and type(st.session_state.result_df) is not int:
+            with st.form("combinacoes") as form_combo:
+                st.session_state.result_df['Ver'] = False
+                matrix_combos = st.data_editor(data=st.session_state.result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']])
+                combo_conciliar = st.form_submit_button("Conciliar")
+
+            if combo_conciliar:
+                st.session_state.matrix_combos = matrix_combos
+                if st.session_state.matrix_combos[st.session_state.matrix_combos['Ver']==True].duplicated().any():
+                    st.error("Existem linhas duplicadas a conciliar")
+                else:
+                    exec_combo_conciliar()
+                    del st.session_state['combo_clicked']
+                    del st.session_state['result_df']
+                    st.session_state.dialog_close = 1
+                    st.rerun()
+
+
+def exec_combo_conciliar():
+    ledger_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='cnt')]
+    bank_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='banco')]
+    conciliar(ledger=ledger_combo, bank=bank_combo, nota=None)
+    del st.session_state["matrix_combos"]
 
 
 def manual(ledger, bank):
@@ -391,37 +481,133 @@ def manual(ledger, bank):
     min_valor = min(ledger["Valor"].min(), bank["Valor"].min())
     max_valor = max(ledger["Valor"].max(), bank["Valor"].max())
 
-    if 'version' not in st.session_state:
-        st.session_state.version = 0
+    if 'dialog_close' not in st.session_state:
+        st.session_state.dialog_close = 1
 
-    inputs_container = st.empty()
-
-    with inputs_container.container():
+    with st.container():
         col1, col2, col3, col4 = st.columns(4)
-        with col1: intervalo_datas = st.date_input("Datas", ( min_data, max_data ), min_data, max_data, key="Datas_Man")
-        with col2: pesquisa = st.text_input("Pesquisa: separar termos com ';'", key="Pesquisa_Man")
-        with col3: input_min_valor = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor, key="Min_Valor_Man")
-        with col4: input_max_valor = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor, key="Max_Valor_Man")
+        with col1:
+            st.subheader("Contabilidade")
+            intervalo_datas_cnt = st.date_input("Datas", ( min_data, max_data ), min_data, max_data, key="Datas_Cnt", format="DD-MM-YYYY")
+            pesquisa_cnt = st.text_input("Pesquisa: separar termos com ';'", key="Pesquisa_Cnt")
+        with col2:
+            st.subheader(" ")
+            input_min_valor_cnt = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor, 
+            key="Min_Valor_Cnt")
+            input_max_valor_cnt = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor, key="Max_Valor_Cnt")
+        with col3:
+            st.subheader("Banco")
+            intervalo_datas_banco = st.date_input("Datas", ( min_data, max_data ), min_data, max_data, key="Datas_Banco", format='DD-MM-YYYY')
+            pesquisa_banco = st.text_input("Pesquisa: separar termos com ';'", key="Pesquisa_Banco")
+        with col4:
+            st.subheader(" ")
+            input_min_valor_banco = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor, 
+            key="Min_Valor_Banco")
+            input_max_valor_banco = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor, key="Max_Valor_Banco")
 
-        filtrar = st.button("Atualizar")
-        if filtrar or 'edit_ledger' not in st.session_state:
-            st.session_state.edit_ledger = filtrar_df(ledger, st.session_state["Datas_Man"], st.session_state["Min_Valor_Man"], st.session_state["Max_Valor_Man"], st.session_state["Pesquisa_Man"])
-            st.session_state.edit_bank = filtrar_df(bank, st.session_state["Datas_Man"], st.session_state["Min_Valor_Man"], st.session_state["Max_Valor_Man"], st.session_state["Pesquisa_Man"])
+        col1a, col2a, col3a, col4a, col5a, col6a, col7a, col8a = st.columns([1,1,1,3,1,1,1,3])
 
-    matrix_container = st.empty()
-    matrizes_manual(matrix_container)
+        with col1a: filtrar_cnt = st.button("Atualizar", key="filtrar_cnt", width="stretch")
+        with col2a: select_all_cnt = st.button("Selecionar", key="select_all_cnt", width="stretch")
+        with col3a: deselect_all_cnt = st.button("Remover", key="deselect_all_cnt", width="stretch")
+        with col4a: combos_cnt = st.button("Combinações possíveis", key="combos_cnt", width="stretch")
+        with col5a: filtrar_banco = st.button("Atualizar", key="filtrar_banco", width="stretch")
+        with col6a: select_all_banco = st.button("Selecionar", key="select_all_banco", width="stretch")
+        with col7a: deselect_all_banco = st.button("Remover", key="deselect_all_banco", width="stretch")
+        with col8a: combos_banco = st.button("Combinações possíveis", key="combos_banco", width="stretch")
 
-    nota = st.text_input("Nota")
-    fazer_match = st.button("Conciliar", key=f'conciliar_bnt_{st.session_state.version}')
+        if filtrar_cnt or 'edit_ledger' not in st.session_state or st.session_state.dialog_close == 1:
+            st.session_state.edit_ledger = filtrar_df(ledger, st.session_state["Datas_Cnt"], st.session_state["Min_Valor_Cnt"], st.session_state["Max_Valor_Cnt"], st.session_state["Pesquisa_Cnt"])
+            st.session_state.dialog_close = 0
+        
+        if filtrar_banco or 'edit_bank' not in st.session_state  or st.session_state.dialog_close == 1:
+            st.session_state.edit_bank = filtrar_df(bank, st.session_state["Datas_Banco"], st.session_state["Min_Valor_Banco"], st.session_state["Max_Valor_Banco"], st.session_state["Pesquisa_Banco"])
+            st.session_state.dialog_close = 0
+
+        if select_all_cnt:
+            st.session_state.edit_ledger['Ver'] = True
+            st.session_state.tbl_cnt['Ver'] = True
+            st.rerun()
+
+        if deselect_all_cnt:
+            st.session_state.edit_ledger['Ver'] = False
+            st.session_state.tbl_cnt['Ver'] = False
+            st.rerun()
+
+        if select_all_banco:
+            st.session_state.edit_bank['Ver'] = True
+            st.rerun()
+
+        if deselect_all_banco:
+            st.session_state.edit_bank['Ver'] = False
+            st.rerun()
+
+    px_per_row = 35
+
+    with st.container():
+        col1, col2 = st.columns([2,2])
+
+        with col1:
+
+            st.session_state.tbl_cnt = st.data_editor(
+                data= st.session_state.edit_ledger,
+                use_container_width=True,
+                height= min(35 + (px_per_row * len(st.session_state.edit_ledger)), 500),
+                hide_index=True,
+                key='tbl_edit_ledger'
+            )
+
+            soma_cnt = round(st.session_state.tbl_cnt['Valor'].sum(),2)
+            st.markdown(f"Total {soma_cnt}")
+
+        with col2:
+            st.session_state.tbl_banco = st.data_editor(
+                data=st.session_state.edit_bank,
+                use_container_width=True,
+                hide_index=True,
+                height = min(35 + (px_per_row * len(st.session_state.edit_bank)), 500),
+                key='tbl_edit_bank'
+            )
+            soma_banco = round(st.session_state.tbl_banco['Valor'].sum(),2)
+            st.markdown(f"Total {soma_banco}")
+
+        linhas_cnt = st.session_state.tbl_cnt[st.session_state.tbl_cnt['Ver']==True]
+        soma_cnt = round(linhas_cnt["Valor"].sum(),2)
+        linhas_bank = st.session_state.tbl_banco[st.session_state.tbl_banco['Ver']==True]
+        soma_bank = round(linhas_bank["Valor"].sum(),2)
+        dif_soma = round(soma_cnt - soma_bank,2)
+        opcoes_cnt = len(st.session_state.tbl_cnt.loc[(st.session_state.tbl_cnt['Valor'] == -dif_soma)])
+        opcoes_banco = len(st.session_state.tbl_banco.loc[(st.session_state.tbl_banco['Valor'] == dif_soma)])
+
+        if dif_soma != 0 and opcoes_cnt == 0 and opcoes_banco == 0:
+            st.error(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: {dif_soma}") 
+        elif dif_soma == 0:
+            st.success(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: 0")
+        else:
+            st.warning(f"Contabilidade: {soma_cnt} | Banco: {soma_bank} | Diferença: {dif_soma} ---- Existem {opcoes_cnt} opções na contabilidade com esta diferença --- Existem {opcoes_banco} opções no banco com esta diferença")
+
+    if combos_cnt:
+        if 'combo_clicked' in st.session_state:
+            del st.session_state['combo_clicked']
+        if 'result_df' in st.session_state:
+            del st.session_state['result_df']
+        opcoes_combos("cnt")
+
+    if combos_banco:
+        if 'combo_clicked' in st.session_state:
+            del st.session_state['combo_clicked']
+        if 'result_df' in st.session_state:
+            del st.session_state['result_df']
+        opcoes_combos("banco")
+
+    nota = st.text_input("Nota", key=f"nota_conciliacao")
+    fazer_match = st.button("Conciliar", key=f'conciliar_bnt')
 
     if fazer_match: 
-        st.session_state.version += 1
-        conciliar(st.session_state.cnt, st.session_state.bnk, nota)
-
-        for state in [f'ledger_matrix_{st.session_state.version-1}', f'bank_matrix_{st.session_state.version-1}', 'cnt', 'bnk', 'edit_ledger', 'edit_bank']:
-            del st.session_state[state]
-        matrix_container.empty()
+        conciliar(st.session_state.tbl_cnt, st.session_state.tbl_banco, nota)
         st.rerun()
+
+    st.divider()
     
     if st.button("Preparar ficheiro download"):
         excel_bytes = download_file()
@@ -433,19 +619,35 @@ def manual(ledger, bank):
         )
 
 
-def reconciliacao_inicial():
-        reconciliation_file = st.session_state.file
-        ledger_df = reconciliation_file["CNT"]
-        bank_df = reconciliation_file["BANCO"]
-        ledger_df = preprocess(ledger_df)
-        bank_df = preprocess(bank_df)
+def reconciliacao_inicial(ficheiro):
+    ledger_df = ficheiro["CNT"]
+    bank_df = ficheiro["BANCO"]
+    ledger_df = preprocess(ledger_df)
+    bank_df = preprocess(bank_df)
 
-        conciliados, ledger, bank = match_transactions(ledger=ledger_df, bank=bank_df, date_tolerance_days=st.session_state.days)
-
+    if st.session_state.conciliar == True:
+        conciliados, ledger, bank = match_transactions(ledger=ledger_df, bank=bank_df, match_total= st.session_state.match_total, match_parcial=st.session_state.match_parcial)
         st.session_state.ledger = ledger
         st.session_state.bank = bank
         st.session_state.conciliados = conciliados
-        st.session_state.conciliacao_inicial = 1
+    else:
+        st.session_state.ledger = ledger_df
+        st.session_state.bank = bank_df
+        st.session_state.conciliados = {
+                "Ordem": 0,
+                "OrdemMovimento": 0,
+                "DataMovimento": None,
+                "DescricaoMovimento": None,
+                "ValorMovimento": 0,
+                "DataExtrato": None,
+                "OrdemExtrato": 0,
+                "DescricaoBanco": None,
+                "ValorBanco": 0,
+                "Score": None,
+                "Nota":None
+            }
+
+    st.session_state.conciliar = False
 
 
 def remover_conciliacao(tbl):
@@ -473,8 +675,17 @@ def remover_conciliacao(tbl):
     st.session_state.bank = pd.concat([st.session_state.bank, df_adicionar_banco], ignore_index=True)
     st.session_state.ledger = pd.concat([st.session_state.ledger, df_adicionar_cnt], ignore_index=True)
 
-    idx_a_remover = linhas_a_remover['OrdemMovimento'].to_list()
-    st.session_state.conciliados = [linha for linha in st.session_state.conciliados if linha.get("OrdemMovimento") not in idx_a_remover]
+    st.session_state.edit_ledger = st.session_state.ledger
+    st.session_state.edit_bank = st.session_state.bank
+
+    idx_a_remover = linhas_a_remover['Ordem'].to_list()
+
+    st.session_state.conciliados[:] = [
+    linha for linha in st.session_state.conciliados if linha.get("Ordem") not in idx_a_remover
+    ]
+
+    st.session_state.remove_success = 1
+
     st.rerun()
 
 
@@ -487,7 +698,7 @@ def adicionar_linhas(df):
             num_docs = len(row[0])
             for linha in range(num_docs):
                 row_dict = {
-                    cols[0]: pd.to_datetime(row[0][linha]),
+                    cols[0]: pd.to_datetime(row[0][linha]).date(),
                     cols[1]: row[1][linha],
                     cols[2]: row[2][linha],
                     "Ver":False
@@ -495,9 +706,9 @@ def adicionar_linhas(df):
                 lista_adicionar.append(row_dict)
         else:
             row_dict = {
-                cols[0]: pd.to_datetime(row[0]),
+                cols[0]: pd.to_datetime(row[0]).date(),
                 cols[1]: row[1],
-                cols[2]: row[2],
+                cols[2]: float(row[2]),
                 "Ver":False
             }
             lista_adicionar.append(row_dict)
@@ -506,26 +717,36 @@ def adicionar_linhas(df):
 
 
 def conciliados():
-    lista_keys = ['OrdemMovimento', 'DataMovimento', 'DescricaoMovimento','ValorMovimento', 'DataExtrato', 'DescricaoBanco', 'ValorBanco', 'Nota']
-    conciliados_show =  [
-        {k: d[k] for k in lista_keys if k in d}
-        for d in st.session_state.conciliados
-    ]
 
-    for row in conciliados_show:
-        row['Remover'] = False
+    with st.form("conciliados"):
+        lista_keys = ['Ordem', 'DataMovimento', 'DescricaoMovimento','ValorMovimento', 'DataExtrato', 'DescricaoBanco', 'ValorBanco', 'Nota']
+        conciliados_show =  [
+            {k: d[k] for k in lista_keys if k in d}
+            for d in st.session_state.conciliados
+        ]
 
-    tbl_conciliados = st.data_editor(
-        data=conciliados_show
-    )
+        for row in conciliados_show:
+            row['Remover'] = False
 
-    if st.button("Remover"):
-        remover_conciliacao(tbl_conciliados)
+        tbl_conciliados = st.data_editor(
+            data=conciliados_show
+        )
+
+        if st.form_submit_button("Remover"):
+            remover_conciliacao(tbl_conciliados)
+
+        if 'remove_success' not in st.session_state:
+            st.session_state.remove_success = 0
+
+        if st.session_state.remove_success == 1:
+            st.success("Movimentos removidos com sucesso")
+            st.session_state.remove_success = 0
 
 
 def resumo():
     total_cnt = 0
     total_banco = 0
+
     for row in st.session_state.conciliados:
         val_cnt = row.get("ValorMovimento", 0)
         if isinstance(val_cnt, list): 
@@ -543,10 +764,10 @@ def resumo():
     num_docs = []
     valor_por_conciliar = []
 
-    for data in dados:
+    for info in dados:
         contagem = 0
         valor = 0
-        for i, row in data.iterrows():
+        for i, row in info.iterrows():
             val = row["Valor"]
             if isinstance(val, list):
                 contagem += len(val)
@@ -572,42 +793,85 @@ def resumo():
         st.metric(label="Por conciliar (lançamentos)", value=num_docs[1])
     with col4:
         st.subheader("Diferenças")
-        st.metric(label="Diferença", value=f'{round((valor_por_conciliar[0]+st.session_state.saldo_i_cnt)-(st.session_state.saldo_i_banco+valor_por_conciliar[1]),2)} €')
+        st.metric(label="Diferença", value=f'{round((st.session_state.saldo_i_banco - st.session_state.saldo_i_cnt + valor_por_conciliar[0] - valor_por_conciliar[1]),2)} €')
 
 
 def app():
     st.set_page_config(page_title="Reconciliações", page_icon=':star', layout='wide')
-    placeholder = st.empty()
 
-    if "file" not in st.session_state:
-        st.session_state["file"] = None
-        st.session_state["conciliacao_inicial"] = None
+    if 'conciliacao_inicial' not in st.session_state:
+        st.session_state.conciliacao_inicial = None
+        st.session_state.conciliar = True
 
-    if st.session_state["file"] is None:
-        upload_file(placeholder)
-        if st.session_state.file is not None:
-            placeholder.empty()
-            st.rerun()
+    if 'file' not in st.session_state:
+        st.session_state.file = None
 
-    if st.session_state.file is not None and st.session_state.conciliacao_inicial == None:
-        reconciliacao_inicial()
+    if st.session_state.conciliacao_inicial == None:
+        pag_inicial = st.empty()
+        with pag_inicial.container():
+            st.title("Reconciliação inicial")
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+            with col1:
+                st.session_state.saldo_i_banco = st.number_input("Saldo Inicial Banco", value=0.00)
+            with col2:
+                st.session_state.saldo_i_cnt = st.number_input("Saldo Inicial Contabilidade", value=0.00)
+            with col3:
+                st.session_state.match_total = st.number_input("MatchTotal%", value=100)
+            with col4:
+                st.session_state.match_parcial = st.number_input("MatchParcial%", value=80)
 
-    if st.session_state.conciliacao_inicial == 1:
-        st.session_state.ledger['Ver'] = False
+            st.divider()
+            col1, col2 = st.columns(2)
+
+            with st.spinner("A processar..."):
+
+                with col1:
+                    st.session_state.file = st.file_uploader("Fazer upload do ficheiro. Deve ter 2 folhas com nome CNT e BANCO cada uma com as colunas Data, Descrição e Valor. Podem existir outras colunas", type=["xlsx", "xls"])
+
+                    if st.button("Executar programa"):
+                        if st.session_state.file == None:
+                            st.error("Não foi efetuado upload do ficheiro")
+                        else:
+                            st.session_state.file = pd.read_excel(st.session_state.file, sheet_name=None)
+                            reconciliacao_inicial(st.session_state.file)
+                            st.session_state.conciliacao_inicial = 1
+                            st.rerun()
+
+                    st.divider()
+
+                    if st.button("Demonstração"):
+                        file = "file\\demo.xlsx"
+                        st.session_state.file = pd.read_excel(file, sheet_name=None)
+                        reconciliacao_inicial(st.session_state.file)
+                        st.session_state.conciliacao_inicial = 1
+                        st.rerun()
+
+                    with open("file/template.xlsx", "rb") as f:
+                        st.download_button(
+                            label="Download Template",
+                            data=f,
+                            file_name="template.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+    elif st.session_state.conciliacao_inicial == 1:
+        del st.session_state['file']
         st.session_state.bank['Ver'] = False
+        st.session_state.ledger['Ver'] = False
 
-        opcao = st.selectbox("", options=['Resumo', 'Conciliados', 'Manual', 'Banco - Ver opções', 'Contabilidade - Ver opções'])
+        if 'DateDiff' in st.session_state.bank.columns:
+            st.session_state.bank.drop(columns=['DateDiff'], inplace=True)
 
-        if opcao == 'Conciliados':
-            conciliados()
-        elif opcao == 'Manual':
-            manual(st.session_state.ledger, st.session_state.bank)
-        elif opcao == 'Banco - Ver opções':
-            ver_opcoes_reconciliacao(st.session_state.bank)
-        elif opcao == 'Contabilidade - Ver opções':
-            ver_opcoes_reconciliacao(st.session_state.ledger)
-        elif opcao == "Resumo":
-            resumo()
+        with st.container():
+            opcao = st.selectbox("", options=['Resumo', 'Conciliados', 'Manual'])
+
+            if opcao == 'Conciliados':
+                conciliados()
+            elif opcao == 'Manual':
+                manual(st.session_state.ledger, st.session_state.bank)
+            elif opcao == "Resumo":
+                resumo()
 
 
-app()
+if __name__ == '__main__':
+    app()
