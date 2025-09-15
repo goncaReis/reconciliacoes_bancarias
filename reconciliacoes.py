@@ -3,6 +3,7 @@ import streamlit as st
 import math
 import ast
 import numpy as np
+import os
 from io import BytesIO
 from itertools import combinations
 from fuzzywuzzy import fuzz
@@ -840,13 +841,15 @@ def app():
                     st.divider()
 
                     if st.button("Demonstração"):
-                        file = "file\\demo.xlsx"
+                        file = os.path.join("file", "demo.xlsx")
                         st.session_state.file = pd.read_excel(file, sheet_name=None)
                         reconciliacao_inicial(st.session_state.file)
                         st.session_state.conciliacao_inicial = 1
                         st.rerun()
 
-                    with open("file/template.xlsx", "rb") as f:
+                    path_template = os.join("file", "template.xlsx")
+
+                    with open(path_template, "rb") as f:
                         st.download_button(
                             label="Download Template",
                             data=f,
