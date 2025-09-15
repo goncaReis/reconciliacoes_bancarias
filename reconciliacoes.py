@@ -847,7 +847,7 @@ def app():
                         st.session_state.conciliacao_inicial = 1
                         st.rerun()
 
-                    path_template = os.join("file", "template.xlsx")
+                    path_template = os.path.join("file", "template.xlsx")
 
                     with open(path_template, "rb") as f:
                         st.download_button(
