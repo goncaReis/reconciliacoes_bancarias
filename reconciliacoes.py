@@ -834,6 +834,8 @@ def app():
                             st.error("Não foi efetuado upload do ficheiro")
                         else:
                             st.session_state.file = pd.read_excel(st.session_state.file, sheet_name=None)
+                            st.session_state.file = st.session_state.file.dropna(how="all")
+                            st.session_state.file = st.session_state.file.dropna(axis=1, how="all")
                             reconciliacao_inicial(st.session_state.file)
                             st.session_state.conciliacao_inicial = 1
                             st.rerun()
