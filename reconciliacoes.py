@@ -4,6 +4,7 @@ import math
 import ast
 import numpy as np
 import os
+import time
 from io import BytesIO
 from itertools import combinations
 from fuzzywuzzy import fuzz
@@ -171,11 +172,33 @@ def testar_combos(df, valor, max_subset_size=2, cancel_tol=1e-4, versao=None):
         return 0
 
 
-def conciliar(ledger=None, bank=None, nota=None):
+@st.dialog("Erro conciliação", on_dismiss="rerun")
+def erro_conciliacao():
+    st.error("A soma dos valores a conciliar não é equivalente")
+    if st.button("Fechar"):
+        st.session_state.show_error = False
+    else:
+        time.sleep(2)
+
+
+def conciliar(ledger=None, bank=None, nota=None, dialog=True):
     if 'num_conciliacao' not in st.session_state:
         st.session_state.num_conciliacao = 1
     else:
         st.session_state.num_conciliacao += 1
+
+    cnt_soma = round(ledger.loc[ledger['Ver']==True, 'Valor'].sum(),2)
+    banco_soma = round(bank.loc[bank['Ver']==True, 'Valor'].sum(),2)
+
+    if cnt_soma != banco_soma:
+        st.session_state.show_error = True
+        if dialog == True:
+            erro_conciliacao()
+            return
+        else:
+            return
+    else:
+        st.session_state.show_error = False
 
     ledger_date, ledger_amount, ledger_desc = [], [], []
     bank_date, bank_amount, bank_desc = [], [], []
@@ -416,6 +439,10 @@ def show_combos_por_tipo(fonte, tipo, max_subset_size = 2, periodo = False):
 
 @st.dialog("Escolher opções", width="large")
 def opcoes_combos(fonte):
+
+    if 'show_error' not in st.session_state:
+        st.session_state.show_error = False
+
     options = ["Por total", "Por documento"]
 
     col1, col2 = st.columns(2)
@@ -448,7 +475,7 @@ def opcoes_combos(fonte):
             if st.session_state.result_df == 0:
                 return st.warning("Não foram encontradas combinações para os parâmetros selecionados")
             else:
-                return st.error(f"Limite ultrapassado de 2,000,000 possibilidades. A pesquisa tem {st.session_state.result_df:,}.")
+                return st.error(f"Limite ultrapassado de 2,000,000 combinações. A pesquisa tem {st.session_state.result_df:,}.")
 
     if 'combo_clicked' in st.session_state:
         if 'result_df' in st.session_state and type(st.session_state.result_df) is not int:
@@ -459,20 +486,23 @@ def opcoes_combos(fonte):
 
             if combo_conciliar:
                 st.session_state.matrix_combos = matrix_combos
-                if st.session_state.matrix_combos[st.session_state.matrix_combos['Ver']==True].duplicated().any():
-                    st.error("Existem linhas duplicadas a conciliar")
+                if st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=="cnt")].index.has_duplicates or st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=="banco")].index.has_duplicates:
+                    st.error("Não podem haver linhas duplicadas a conciliar")
                 else:
                     exec_combo_conciliar()
-                    del st.session_state['combo_clicked']
-                    del st.session_state['result_df']
-                    st.session_state.dialog_close = 1
-                    st.rerun()
+                    if st.session_state.show_error == True:
+                        st.error("A soma dos valores a conciliar não é equivalente")
+                    else:
+                        del st.session_state['combo_clicked']
+                        del st.session_state['result_df']
+                        st.session_state.dialog_close = 1
+                        st.rerun()
 
 
 def exec_combo_conciliar():
     ledger_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='cnt')]
     bank_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='banco')]
-    conciliar(ledger=ledger_combo, bank=bank_combo, nota=None)
+    conciliar(ledger=ledger_combo, bank=bank_combo, nota=None, dialog=False)
     del st.session_state["matrix_combos"]
 
 
