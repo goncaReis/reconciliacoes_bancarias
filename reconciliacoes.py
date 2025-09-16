@@ -104,7 +104,7 @@ def dataframes_to_excel(matches: list, ledger: pd.DataFrame, bank: pd.DataFrame)
     df_ledger = ledger.copy()
     df_ledger.drop(columns=["Ver"], inplace=True)
 
-    df_bank = ledger.copy()
+    df_bank = bank.copy()
     df_bank.drop(columns=["Ver"], inplace=True)
 
     matched_total = matched_df[ (matched_df['Score'] >= st.session_state.match_total) & (matched_df['Score'].isna() == False) ]
