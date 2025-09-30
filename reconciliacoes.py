@@ -16,7 +16,7 @@ from collections import Counter
 
 def preprocess(df):
     df["Descrição"] = df["Descrição"].str.upper().str.replace(r"[^\w\s]", "", regex=True)
-    df["Data"] = pd.to_datetime(df["Data"]).dt.date
+    df["Data"] = pd.to_datetime(df["Data"], dayfirst=True).dt.date
     df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce").astype(float).round(2)
     df.dropna()
     return df
