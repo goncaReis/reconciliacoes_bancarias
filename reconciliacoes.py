@@ -255,6 +255,7 @@ def conciliar(ledger=None, bank=None, nota=None, dialog=True):
 
 
 def filtrar_df(df, intervalo_datas, min_valor, max_valor, pesquisa):
+
     min_data, max_data = intervalo_datas
     min_data = pd.to_datetime(min_data).date()
     max_data = pd.to_datetime(max_data).date()
@@ -551,10 +552,12 @@ def manual(ledger, bank):
         with col8a: combos_banco = st.button("Combinações possíveis", key="combos_banco", width="stretch")
 
         if filtrar_cnt or 'edit_ledger' not in st.session_state or st.session_state.dialog_close == 1:
+
             st.session_state.edit_ledger = filtrar_df(ledger, st.session_state["Datas_Cnt"], st.session_state["Min_Valor_Cnt"], st.session_state["Max_Valor_Cnt"], st.session_state["Pesquisa_Cnt"])
             st.session_state.dialog_close = 0
         
         if filtrar_banco or 'edit_bank' not in st.session_state  or st.session_state.dialog_close == 1:
+            
             st.session_state.edit_bank = filtrar_df(bank, st.session_state["Datas_Banco"], st.session_state["Min_Valor_Banco"], st.session_state["Max_Valor_Banco"], st.session_state["Pesquisa_Banco"])
             st.session_state.dialog_close = 0
 
@@ -578,11 +581,12 @@ def manual(ledger, bank):
 
     px_per_row = 35
 
+
+
     with st.container():
         col1, col2 = st.columns([2,2])
 
         with col1:
-
             st.session_state.tbl_cnt = st.data_editor(
                 data= st.session_state.edit_ledger,
                 use_container_width=True,
@@ -901,6 +905,20 @@ def app():
         del st.session_state['file']
         st.session_state.bank['Ver'] = False
         st.session_state.ledger['Ver'] = False
+
+        colunas_prioritarias = ['Data', 'Descrição', 'Valor', 'Ver']
+
+        colunas_prioritarias_cnt = [col for col in colunas_prioritarias if col in st.session_state.ledger.columns]
+        colunas_prioritarias_banco = [col for col in colunas_prioritarias if col in st.session_state.bank.columns]
+
+        outras_colunas_cnt = [col for col in st.session_state.ledger.columns if col not in colunas_prioritarias_cnt]
+        outras_colunas_banco = [col for col in st.session_state.bank.columns if col not in colunas_prioritarias_banco]
+
+        st.session_state.ledger = st.session_state.ledger[colunas_prioritarias + outras_colunas_cnt]
+        st.session_state.bank = st.session_state.bank[colunas_prioritarias + outras_colunas_banco]
+
+        st.session_state.ledger = st.session_state.ledger.sort_values(by="Data")
+        st.session_state.bank = st.session_state.bank.sort_values(by="Data")
 
         if 'DateDiff' in st.session_state.bank.columns:
             st.session_state.bank.drop(columns=['DateDiff'], inplace=True)
