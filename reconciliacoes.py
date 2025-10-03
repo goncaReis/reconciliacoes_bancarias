@@ -10,8 +10,7 @@ from itertools import combinations
 from fuzzywuzzy import fuzz
 from collections import Counter
 
-#bug limpar linhas com nulls
-#alterar scores para dar mais peso à descrição
+#validar se doc não tem problemas antes de processar
 #resolver colunas a mais na remocao de conciliacao
 
 def preprocess(df):
@@ -22,15 +21,53 @@ def preprocess(df):
     return df
 
 
+def add_conciliacao_completa(row, type, index, nota): #listas com registo integral de movimentos conciliados
+    if type == 'cnt':
+        add_ledger_row = dict(zip(st.session_state.ledger_cols, row.values.tolist()))
+        add_ledger_row.update({"index":index})            
+        add_ledger_row.update({"ordem":st.session_state.num_conciliacao})
+        add_ledger_row.update({"nota":nota})
+        st.session_state.ledger_conciliados += [add_ledger_row]
+
+    elif type == 'banco':
+        add_bank_row = dict(zip(st.session_state.bank_cols, row.values.tolist()))
+        add_bank_row.update({"index":index})            
+        add_bank_row.update({"ordem":st.session_state.num_conciliacao})
+        add_bank_row.update({"nota":nota})
+        st.session_state.bank_conciliados += [add_bank_row]
+
+
+def remove_conciliacao_completa(ordens_movimento: list):
+    st.session_state.ledger_conciliados = [item for item in st.session_state.ledger_conciliados if item["ordem"] not in ordens_movimento]
+
+    st.session_state.bank_conciliados = [item for item in st.session_state.bank_conciliados if item["ordem"] not in ordens_movimento]
+
+
+def return_conciliacao_completa(ordens_movimento: list):
+    remove_ledger = [item for item in st.session_state.ledger_conciliados if item["ordem"] in ordens_movimento]
+
+    remove_bank = [item for item in st.session_state.bank_conciliados if item["ordem"] in ordens_movimento]
+
+    df_ledger_remove = pd.DataFrame(remove_ledger).set_index("index")
+    df_ledger_remove.drop(["ordem", "nota"], axis=1, inplace=True)
+    df_bank_remove = pd.DataFrame(remove_bank).set_index("index")
+    df_bank_remove.drop(["ordem", "nota"], axis=1, inplace=True)
+
+    st.session_state.ledger = pd.concat([st.session_state.ledger, df_ledger_remove])
+    st.session_state.bank = pd.concat([st.session_state.bank, df_bank_remove])
+
+    return
+
+
 def match_transactions(ledger, bank, previous_matched=None, match_total=100, match_parcial=80):
     if 'num_conciliacao' not in st.session_state:
         st.session_state.num_conciliacao = 1
-
+        
     if previous_matched:
         matches = previous_matched
     else:
         matches = []
-    
+
     bank['DateDiff'] = None
     bank_falta = bank
 
@@ -94,30 +131,28 @@ def match_transactions(ledger, bank, previous_matched=None, match_total=100, mat
                 "Nota": nota_match
             })
 
+            add_conciliacao_completa(type='cnt', row=ledger_row, index=i, nota=nota_match)
+            add_conciliacao_completa(type='banco', row=bank_row, index=j, nota=nota_match)
+
             st.session_state.num_conciliacao += 1
-            
+
             bank_falta.drop([best_match], inplace=True)
             ledger.drop([i], inplace=True)
 
     return [matches, ledger, bank_falta]
 
 
-def dataframes_to_excel(matches: list, ledger: pd.DataFrame, bank: pd.DataFrame):
-    matched_df = pd.DataFrame(matches)
-    sheets = ['MATCH TOTAL', 'MATCH PARCIAL', 'MATCH MANUAL', 'CNT', 'BANCO']
+def dataframes_to_excel(ledger_conciliados, bank_conciliados,  ledger: pd.DataFrame, bank: pd.DataFrame):
+    match_cnt = pd.DataFrame(ledger_conciliados).drop(["index", "Ver"], axis=1)
+    match_banco = pd.DataFrame(bank_conciliados).drop(["index", "Ver"], axis=1)
+    sheets = ['MATCH CNT', 'MATCH BANCO', 'CNT', 'BANCO']
     df_ledger = ledger.copy()
     df_ledger.drop(columns=["Ver"], inplace=True)
 
     df_bank = bank.copy()
     df_bank.drop(columns=["Ver"], inplace=True)
 
-    matched_total = matched_df[ (matched_df['Score'] >= st.session_state.match_total) & (matched_df['Score'].isna() == False) ]
-    matched_parcial = matched_df[(matched_df['Score'] >= st.session_state.match_parcial) & (matched_df['Score'] < st.session_state.match_total) & (matched_df['Score'].isna() == False) ]
-    matched_manual = matched_df[(matched_df['Score'].isna())]
-
-    matched_manual.drop(columns=["OrdemMovimento", "OrdemExtrato", "Score"], inplace=True)
-
-    dataframes = [matched_total, matched_parcial, matched_manual, df_ledger, df_bank]
+    dataframes = [match_cnt, match_banco, df_ledger, df_bank]
 
     output = BytesIO()
 
@@ -130,7 +165,7 @@ def dataframes_to_excel(matches: list, ledger: pd.DataFrame, bank: pd.DataFrame)
 
 
 def download_file():
-    excel_bytes = dataframes_to_excel(st.session_state.conciliados, st.session_state.ledger, st.session_state.bank)
+    excel_bytes = dataframes_to_excel(st.session_state.ledger_conciliados, st.session_state.bank_conciliados, st.session_state.ledger, st.session_state.bank)
     return excel_bytes
 
 
@@ -211,6 +246,7 @@ def conciliar(ledger=None, bank=None, nota=None, dialog=True):
     if ledger is not None and len(ledger) > 0:
         for i, row in ledger.iterrows():
             if row['Ver'] is True:
+                add_conciliacao_completa(type='cnt', row=row, index=i, nota=nota)
                 ledger_date.append(row['Data'].strftime("%Y-%m-%d"))
                 ledger_amount.append(row['Valor'])
                 ledger_desc.append(row['Descrição'])
@@ -222,6 +258,7 @@ def conciliar(ledger=None, bank=None, nota=None, dialog=True):
     if bank is not None and len(bank) > 0:
         for j, row in bank.iterrows():
             if row['Ver'] is True:
+                add_conciliacao_completa(type='banco', row=row, index=j, nota=nota)
                 bank_date.append(row['Data'].strftime("%Y-%m-%d"))
                 bank_amount.append(row['Valor'])
                 bank_desc.append(row['Descrição'])
@@ -255,7 +292,6 @@ def conciliar(ledger=None, bank=None, nota=None, dialog=True):
 
 
 def filtrar_df(df, intervalo_datas, min_valor, max_valor, pesquisa):
-
     min_data, max_data = intervalo_datas
     min_data = pd.to_datetime(min_data).date()
     max_data = pd.to_datetime(max_data).date()
@@ -511,10 +547,28 @@ def exec_combo_conciliar():
 
 
 def manual(ledger, bank):
-    min_data = min(ledger["Data"].min(), bank["Data"].min())
-    max_data = max(ledger["Data"].max(), bank["Data"].max())
-    min_valor = min(ledger["Valor"].min(), bank["Valor"].min())
-    max_valor = max(ledger["Valor"].max(), bank["Valor"].max())
+
+    if ledger.empty == False:
+        min_data_cnt = ledger["Data"].min()
+        max_data_cnt = ledger["Data"].max()
+        min_valor_cnt = ledger["Valor"].min()
+        max_valor_cnt = ledger["Valor"].max()
+    else:
+        min_data_cnt = '1900-01-01'
+        max_data_cnt = '1900-01-01'
+        min_valor_cnt = 0
+        max_valor_cnt = 0
+
+    if bank.empty == False:
+        min_data_banco = bank["Data"].min()
+        max_data_banco= bank["Data"].max()
+        min_valor_banco = bank["Valor"].min()
+        max_valor_banco = bank["Valor"].max()
+    else:
+        min_data_banco = '1900-01-01'
+        max_data_banco = '1900-01-01'
+        min_valor_banco = 0
+        max_valor_banco = 0
 
     if 'dialog_close' not in st.session_state:
         st.session_state.dialog_close = 1
@@ -523,22 +577,22 @@ def manual(ledger, bank):
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.subheader("Contabilidade")
-            intervalo_datas_cnt = st.date_input("Datas", ( min_data, max_data ), min_data, max_data, key="Datas_Cnt", format="DD-MM-YYYY")
+            intervalo_datas_cnt = st.date_input("Datas", ( min_data_cnt, max_data_cnt ), min_data_cnt, max_data_cnt, key="Datas_Cnt", format="DD-MM-YYYY")
             pesquisa_cnt = st.text_input("Pesquisa: separar termos com ';'", key="Pesquisa_Cnt")
         with col2:
             st.subheader(" ")
-            input_min_valor_cnt = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor, 
+            input_min_valor_cnt = st.number_input(label="Valor mínimo", min_value=min_valor_cnt, max_value=max_valor_cnt, value=min_valor_cnt, 
             key="Min_Valor_Cnt")
-            input_max_valor_cnt = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor, key="Max_Valor_Cnt")
+            input_max_valor_cnt = st.number_input(label="Valor máximo", min_value=min_valor_cnt, max_value=max_valor_cnt, value=max_valor_cnt, key="Max_Valor_Cnt")
         with col3:
             st.subheader("Banco")
-            intervalo_datas_banco = st.date_input("Datas", ( min_data, max_data ), min_data, max_data, key="Datas_Banco", format='DD-MM-YYYY')
+            intervalo_datas_banco = st.date_input("Datas", ( min_data_banco, max_data_banco ), min_data_banco, max_data_banco, key="Datas_Banco", format='DD-MM-YYYY')
             pesquisa_banco = st.text_input("Pesquisa: separar termos com ';'", key="Pesquisa_Banco")
         with col4:
             st.subheader(" ")
-            input_min_valor_banco = st.number_input(label="Valor mínimo", min_value=min_valor, max_value=max_valor, value=min_valor, 
+            input_min_valor_banco = st.number_input(label="Valor mínimo", min_value=min_valor_banco, max_value=max_valor_banco, value=min_valor_banco, 
             key="Min_Valor_Banco")
-            input_max_valor_banco = st.number_input(label="Valor máximo", min_value=min_valor, max_value=max_valor, value=max_valor, key="Max_Valor_Banco")
+            input_max_valor_banco = st.number_input(label="Valor máximo", min_value=min_valor_banco, max_value=max_valor_banco, value=max_valor_banco, key="Max_Valor_Banco")
 
         col1a, col2a, col3a, col4a, col5a, col6a, col7a, col8a = st.columns([1,1,1,3,1,1,1,3])
 
@@ -663,6 +717,9 @@ def reconciliacao_inicial(ficheiro):
     ledger_df = preprocess(ledger_df)
     bank_df = preprocess(bank_df)
 
+    st.session_state.ledger_cols = ledger_df.columns.values.tolist()
+    st.session_state.bank_cols = bank_df.columns.values.tolist()
+
     if st.session_state.conciliar == True:
         conciliados, ledger, bank = match_transactions(ledger=ledger_df, bank=bank_df, match_total= st.session_state.match_total, match_parcial=st.session_state.match_parcial)
         st.session_state.ledger = ledger
@@ -688,30 +745,16 @@ def reconciliacao_inicial(ficheiro):
     st.session_state.conciliar = False
 
 
-def remover_conciliacao(tbl):
+def remover_conciliacao(tbl): #remove linha conciliada da lista de conciliacoes e devolve aos pendentes
     col_cnt = ['DataMovimento', 'DescricaoMovimento', 'ValorMovimento']
     col_bnk = ['DataExtrato', 'DescricaoBanco', 'ValorBanco']
     
     tbl_processada = pd.DataFrame(tbl)
     linhas_a_remover = tbl_processada[tbl_processada['Remover']==True]
-    linhas_a_remover.drop(["Remover", "Nota"],axis=1, inplace=True)
+    linhas_a_remover_list = linhas_a_remover["Ordem"].values.tolist()
 
-    for col in linhas_a_remover.columns:
-        linhas_a_remover[col] = linhas_a_remover[col].apply(
-            lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("[") else x
-        )
-
-    linhas_a_remover_cnt = linhas_a_remover[col_cnt].copy()
-    linhas_a_remover_banco = linhas_a_remover[col_bnk].copy()
-
-    lista_adicionar_cnt = adicionar_linhas(linhas_a_remover_cnt)
-    lista_adicionar_banco = adicionar_linhas(linhas_a_remover_banco)
-
-    df_adicionar_cnt = pd.DataFrame(lista_adicionar_cnt)
-    df_adicionar_banco = pd.DataFrame(lista_adicionar_banco)
-
-    st.session_state.bank = pd.concat([st.session_state.bank, df_adicionar_banco], ignore_index=True)
-    st.session_state.ledger = pd.concat([st.session_state.ledger, df_adicionar_cnt], ignore_index=True)
+    return_conciliacao_completa(ordens_movimento=linhas_a_remover_list)
+    remove_conciliacao_completa(ordens_movimento=linhas_a_remover_list)
 
     st.session_state.edit_ledger = st.session_state.ledger
     st.session_state.edit_bank = st.session_state.bank
@@ -727,35 +770,15 @@ def remover_conciliacao(tbl):
     st.rerun()
 
 
-def adicionar_linhas(df):
-    lista_adicionar = []
-    cols = ["Data", "Descrição", "Valor"]
+def adicionar_linhas(df, type):
+    if type == 'cnt':
+        pd.concat(st.session_state.ledger, df)
 
-    for i, row in df.iterrows():
-        if isinstance(row[0], list):
-            num_docs = len(row[0])
-            for linha in range(num_docs):
-                row_dict = {
-                    cols[0]: pd.to_datetime(row[0][linha]).date(),
-                    cols[1]: row[1][linha],
-                    cols[2]: row[2][linha],
-                    "Ver":False
-                }
-                lista_adicionar.append(row_dict)
-        else:
-            row_dict = {
-                cols[0]: pd.to_datetime(row[0]).date(),
-                cols[1]: row[1],
-                cols[2]: float(row[2]),
-                "Ver":False
-            }
-            lista_adicionar.append(row_dict)
-
-    return lista_adicionar
+    elif type == 'banco':
+        pd.concat(st.session_state.bank, df)
 
 
 def conciliados():
-
     with st.form("conciliados"):
         lista_keys = ['Ordem', 'DataMovimento', 'DescricaoMovimento','ValorMovimento', 'DataExtrato', 'DescricaoBanco', 'ValorBanco', 'Nota']
         conciliados_show =  [
@@ -863,6 +886,10 @@ def app():
 
             with st.spinner("A processar..."):
 
+                if 'ledger_conciliados' not in st.session_state:
+                    st.session_state.ledger_conciliados = []
+                    st.session_state.bank_conciliados = []
+
                 with col1:
                     st.session_state.file = st.file_uploader("Fazer upload do ficheiro. Deve ter 2 folhas com nome CNT e BANCO cada uma com as colunas Data, Descrição e Valor. Podem existir outras colunas", type=["xlsx", "xls"])
 
@@ -919,6 +946,9 @@ def app():
 
         st.session_state.ledger = st.session_state.ledger.sort_values(by="Data")
         st.session_state.bank = st.session_state.bank.sort_values(by="Data")
+
+        st.session_state.ledger_cols = st.session_state.ledger.columns
+        st.session_state.bank_cols = st.session_state.bank.columns
 
         if 'DateDiff' in st.session_state.bank.columns:
             st.session_state.bank.drop(columns=['DateDiff'], inplace=True)
