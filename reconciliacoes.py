@@ -563,10 +563,10 @@ def exec_combo_conciliar():
     ledger_combo = ledger_combo.index.tolist()
     bank_combo = bank_combo.index.tolist()
 
-    ledger_combo = st.session_state.ledger[st.session_state.ledger.index.isin(ledger_combo)]
+    ledger_combo = st.session_state.ledger[st.session_state.ledger.index.isin(ledger_combo)].copy()
     ledger_combo['Ver'] = True
 
-    bank_combo = st.session_state.bank[st.session_state.bank.index.isin(bank_combo)]
+    bank_combo = st.session_state.bank[st.session_state.bank.index.isin(bank_combo)].copy()
     bank_combo  ['Ver'] = True
 
     conciliar(ledger=ledger_combo, bank=bank_combo, nota=None, dialog=False)
