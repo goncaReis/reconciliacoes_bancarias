@@ -84,7 +84,12 @@ def match_transactions(ledger, bank, previous_matched=None, match_total=100, mat
 
         penalizacao_valores_iguais = 3
         score_threshold = 50
-        initial_score = score_threshold - (len(candidates_original) * penalizacao_valores_iguais)
+
+        if len(candidates_original) == 1:
+            initial_score = score_threshold
+        else:
+            initial_score = score_threshold - (len(candidates_original) * penalizacao_valores_iguais)
+        
         candidates = bank_falta[
             (bank_falta["Valor"]==ledger_amount)
         ]
@@ -806,6 +811,7 @@ def adicionar_linhas(df, type):
 
 
 def conciliados():
+
     with st.form("conciliados"):
         lista_keys = ['Ordem', 'DataMovimento', 'DescricaoMovimento','ValorMovimento', 'DataExtrato', 'DescricaoBanco', 'ValorBanco', 'Nota']
         conciliados_show =  [
