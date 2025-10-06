@@ -538,7 +538,7 @@ def opcoes_combos(fonte):
                     combo_conciliar = st.button("Conciliar", width='stretch')
                 
                 with col2: 
-                    select_all = st.button("Selecionar todos", width='stretch')
+                    select_all = st.button("Selecionar todos", width='stretch', help="Clickar 2x")
 
 
             if combo_conciliar:
@@ -562,6 +562,16 @@ def opcoes_combos(fonte):
 def exec_combo_conciliar():
     ledger_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='cnt')]
     bank_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='banco')]
+
+    ledger_combo = ledger_combo.index.tolist()
+    bank_combo = bank_combo.index.tolist()
+
+    ledger_combo = st.session_state.ledger[st.session_state.ledger.index.isin(ledger_combo)]
+    ledger_combo['Ver'] = True
+
+    bank_combo = st.session_state.bank[st.session_state.bank.index.isin(bank_combo)]
+    bank_combo  ['Ver'] = True
+
     conciliar(ledger=ledger_combo, bank=bank_combo, nota=None, dialog=False)
     del st.session_state["matrix_combos"]
 
