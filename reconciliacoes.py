@@ -10,8 +10,6 @@ from itertools import combinations
 from fuzzywuzzy import fuzz
 from collections import Counter
 
-#validar se doc não tem problemas antes de processar
-#resolver colunas a mais na remocao de conciliacao
 
 def preprocess(df):
     df["Descrição"] = df["Descrição"].str.upper().str.replace(r"[^\w\s]", "", regex=True)
@@ -55,8 +53,6 @@ def return_conciliacao_completa(ordens_movimento: list):
 
     st.session_state.ledger = pd.concat([st.session_state.ledger, df_ledger_remove])
     st.session_state.bank = pd.concat([st.session_state.bank, df_bank_remove])
-
-    return
 
 
 def match_transactions(ledger, bank, previous_matched=None, match_total=100, match_parcial=80):
@@ -547,6 +543,16 @@ def opcoes_combos(fonte):
                 st.session_state.matrix_combos = matrix_combos
                 if st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=="cnt")].index.has_duplicates or st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=="banco")].index.has_duplicates:
                     st.error("Não podem haver linhas duplicadas a conciliar")
+
+                    lista_cnt = st.session_state.matrix_combos[st.session_state.matrix_combos['Tipo']=="cnt"]
+                    duplicados_cnt = lista_cnt[lista_cnt.index.duplicated()].index.tolist()
+
+                    lista_banco = st.session_state.matrix_combos[st.session_state.matrix_combos['Tipo']=="banco"]
+                    duplicados_banco = lista_banco[lista_banco.index.duplicated()].index.tolist()
+
+                    st.markdown(f"ID duplicados cnt: {duplicados_cnt}")
+                    st.markdown(f"ID duplicados banco: {duplicados_banco}")
+
                 else:
                     exec_combo_conciliar()
                     if st.session_state.show_error == True:
