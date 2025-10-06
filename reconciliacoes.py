@@ -407,8 +407,7 @@ def show_combos_por_tipo(fonte, tipo, max_subset_size = 2, periodo = False):
             
             if type(result_df) is not int:
                 result_df['Tipo'] = outra_tbl
-                st.session_state.result_df = pd.concat([original_df, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
-                                        ])
+                st.session_state.result_df = pd.concat([original_df, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]])
             else:
                 st.session_state.result_df = result_df
                 return st.session_state.result_df
@@ -491,9 +490,9 @@ def opcoes_combos(fonte):
     with col2:
         escolher_max_doc = st.number_input("Num Documentos Máx", min_value=0, value=2)
 
-    dia = st.checkbox("Apenas considerar movimentos do mesmo dia")
-    mes = st.checkbox("Apenas considerar movimentos do mesmo mês")
-    ano = st.checkbox("Apenas considerar movimentos do mesmo ano")
+    dia = st.checkbox("Agrupar apenas por dia")
+    mes = st.checkbox("Agrupar apenas por mês")
+    ano = st.checkbox("Agrupar apenas por ano")
 
     if dia == True:
         periodo = 'dia'
@@ -521,10 +520,8 @@ def opcoes_combos(fonte):
     if 'combo_clicked' in st.session_state:
         if 'result_df' in st.session_state and type(st.session_state.result_df) is not int:
             with st.container():
-
                 if st.session_state.select_all == 1:
                     st.session_state.result_df['Ver'] = True
-                    st.session_state.select_all = 0
                 elif 'select_all' not in st.session_state:
                     st.session_state.result_df['Ver'] = False
                 else:
