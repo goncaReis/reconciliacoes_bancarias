@@ -506,6 +506,7 @@ def opcoes_combos(fonte):
 
     if st.button("Ver combinações"):
         with st.spinner("A executar"):
+            st.session_state.select_all = 0
             st.session_state.result_df = 0
             st.session_state.combo_clicked = 1
             st.session_state.result_df = show_combos_por_tipo(fonte, escolher_opcao_tipo, max_subset_size = escolher_max_doc, periodo=periodo)
@@ -519,10 +520,26 @@ def opcoes_combos(fonte):
 
     if 'combo_clicked' in st.session_state:
         if 'result_df' in st.session_state and type(st.session_state.result_df) is not int:
-            with st.form("combinacoes") as form_combo:
-                st.session_state.result_df['Ver'] = False
+            with st.container():
+
+                if st.session_state.select_all == 1:
+                    st.session_state.result_df['Ver'] = True
+                    st.session_state.select_all = 0
+                elif 'select_all' not in st.session_state:
+                    st.session_state.result_df['Ver'] = False
+                else:
+                    st.session_state.result_df['Ver'] = False
+
                 matrix_combos = st.data_editor(data=st.session_state.result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']])
-                combo_conciliar = st.form_submit_button("Conciliar")
+                
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    combo_conciliar = st.button("Conciliar", width='stretch')
+                
+                with col2: 
+                    select_all = st.button("Selecionar todos", width='stretch')
+
 
             if combo_conciliar:
                 st.session_state.matrix_combos = matrix_combos
@@ -537,6 +554,9 @@ def opcoes_combos(fonte):
                         del st.session_state['result_df']
                         st.session_state.dialog_close = 1
                         st.rerun()
+
+            if select_all:
+                st.session_state.select_all = 1
 
 
 def exec_combo_conciliar():
