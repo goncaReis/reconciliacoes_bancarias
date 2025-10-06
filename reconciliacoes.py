@@ -62,7 +62,7 @@ def return_conciliacao_completa(ordens_movimento: list):
 def match_transactions(ledger, bank, previous_matched=None, match_total=100, match_parcial=80):
     if 'num_conciliacao' not in st.session_state:
         st.session_state.num_conciliacao = 1
-        
+
     if previous_matched:
         matches = previous_matched
     else:
@@ -82,8 +82,8 @@ def match_transactions(ledger, bank, previous_matched=None, match_total=100, mat
         if candidates_original.empty:
             continue
 
-        penalizacao_valores_iguais = 5
-        score_threshold = 80
+        penalizacao_valores_iguais = 3
+        score_threshold = 50
         initial_score = score_threshold - (len(candidates_original) * penalizacao_valores_iguais)
         candidates = bank_falta[
             (bank_falta["Valor"]==ledger_amount)
@@ -99,10 +99,10 @@ def match_transactions(ledger, bank, previous_matched=None, match_total=100, mat
             score = 0
             bank_date = candidates.loc[j, 'Data']
             candidates.loc[j, 'DateDiff'] = abs((ledger_date - bank_date).days)
-            min_score_data = 25
+            min_score_data = 15
             date_score = max(initial_score - candidates.loc[j, 'DateDiff'], min_score_data)
             bank_desc = bank_row["Descrição"]
-            ceiling_description_score = 5
+            ceiling_description_score = 2
             description_score = fuzz.token_sort_ratio(ledger_desc, bank_desc) / ceiling_description_score
             score = date_score + description_score
             best_score = max(best_score, score)
