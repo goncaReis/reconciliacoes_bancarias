@@ -529,6 +529,8 @@ def opcoes_combos(fonte):
                     st.session_state.result_df['Ver'] = False
 
                 matrix_combos = st.data_editor(data=st.session_state.result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']])
+
+                nota = st.text_input("Nota: ", width='stretch')
                 
                 col1, col2 = st.columns(2)
 
@@ -554,7 +556,7 @@ def opcoes_combos(fonte):
                     st.markdown(f"ID duplicados banco: {duplicados_banco}")
 
                 else:
-                    exec_combo_conciliar()
+                    exec_combo_conciliar(nota=nota)
                     if st.session_state.show_error == True:
                         st.error("A soma dos valores a conciliar não é equivalente")
                     else:
@@ -567,7 +569,7 @@ def opcoes_combos(fonte):
                 st.session_state.select_all = 1
 
 
-def exec_combo_conciliar():
+def exec_combo_conciliar(nota=None):
     ledger_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='cnt')]
     bank_combo = st.session_state.matrix_combos[(st.session_state.matrix_combos['Ver']==True) & (st.session_state.matrix_combos['Tipo']=='banco')]
 
@@ -580,7 +582,7 @@ def exec_combo_conciliar():
     bank_combo = st.session_state.bank[st.session_state.bank.index.isin(bank_combo)].copy()
     bank_combo  ['Ver'] = True
 
-    conciliar(ledger=ledger_combo, bank=bank_combo, nota=None, dialog=False)
+    conciliar(ledger=ledger_combo, bank=bank_combo, nota=nota, dialog=False)
     del st.session_state["matrix_combos"]
 
 
