@@ -144,6 +144,11 @@ def match_transactions(ledger, bank, previous_matched=None, match_total=100, mat
 
 
 def dataframes_to_excel(ledger_conciliados, bank_conciliados,  ledger: pd.DataFrame, bank: pd.DataFrame):
+
+    if isinstance(ledger_conciliados, list) and len(ledger_conciliados) == 0:
+        st.markdown("Não foram efetuadas quaisquer conciliações")
+        return
+
     match_cnt = pd.DataFrame(ledger_conciliados).drop(["index", "Ver"], axis=1)
     match_banco = pd.DataFrame(bank_conciliados).drop(["index", "Ver"], axis=1)
     sheets = ['MATCH CNT', 'MATCH BANCO', 'CNT', 'BANCO']
@@ -153,9 +158,17 @@ def dataframes_to_excel(ledger_conciliados, bank_conciliados,  ledger: pd.DataFr
     df_bank = bank.copy()
     df_bank.drop(columns=["Ver"], inplace=True)
 
-    dataframes = [match_cnt, match_banco, df_ledger, df_bank]
-
     output = BytesIO()
+
+    if 'max_ordem' in st.session_state:
+        match_cnt['ordem'] = match_cnt['ordem'] + st.session_state.max_ordem 
+        match_banco['ordem'] = match_banco['ordem'] + st.session_state.max_ordem 
+        match_cnt = pd.concat([st.session_state.pre_conciliados_cnt, match_cnt])
+        match_banco = pd.concat([st.session_state.pre_conciliados_banco, match_banco])
+        match_cnt['Data'] = pd.to_datetime(match_cnt['Data']).dt.date
+        match_banco['Data'] = pd.to_datetime(match_banco['Data']).dt.date
+
+    dataframes = [match_cnt, match_banco, df_ledger, df_bank]
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for i, frame in enumerate(dataframes):
@@ -467,7 +480,7 @@ def show_combos_por_tipo(fonte, tipo, max_subset_size = 2, periodo = False):
                 if type(result_df) is not int:
                     result_df['Tipo'] = outra_tbl
                     df_all = pd.concat([df_all, row_original, result_df[['Tipo', '#', 'Data', 'Descrição', 'Valor', 'Ver']]
-                                            ])
+                    ])
 
                 if df_all.empty == False:
                     st.session_state.result_df = df_all
@@ -940,10 +953,15 @@ def app():
                         else:
                             xls = pd.ExcelFile(st.session_state.file)
                             dfs = {}
-                            for sheet in ["CNT", "BANCO"]:
+                            for sheet in ['CNT', 'BANCO']:
                                 df = pd.read_excel(xls, sheet_name=sheet)
-                                df = df.dropna(how="all").dropna(axis=1, how="all")
+                                df = df.dropna(how='all').dropna(axis=1, how='all')
                                 dfs[sheet] = df
+
+                            if ('MATCH CNT' in xls.sheet_names) and ('MATCH BANCO' in xls.sheet_names):
+                                st.session_state.pre_conciliados_cnt = pd.read_excel(xls, sheet_name='MATCH CNT')
+                                st.session_state.pre_conciliados_banco = pd.read_excel(xls, sheet_name='MATCH BANCO')
+                                st.session_state.max_ordem = st.session_state.pre_conciliados_cnt['ordem'].max()
 
                             st.session_state.file = dfs
                             reconciliacao_inicial(st.session_state.file)
